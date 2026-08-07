@@ -1,5 +1,19 @@
 # Day 11 — Controlled Agent Security (2026)
 
+> **Bài nộp cá nhân** · Họ tên: **Phan Trọng Tiến** · MSSV: `2A202601095` · Framework: Google ADK + Gemini
+>
+> Fork: https://github.com/chirio2tien/K3-Day-11-Guardrails-HITL-Responsible-AI-PHANTRONGTIEN-2A202601095
+>
+> **Cách chạy nhanh (Windows PowerShell):**
+> ```powershell
+> .\.venv\Scripts\Activate.ps1
+> $env:PYTHONIOENCODING="utf-8"
+> $env:STUDENT_ID="2A202601095"
+> pytest tests/smoke -q; pytest tests/public -q
+> cd src; python main.py --part 5
+> ```
+> Báo cáo: `report/2A202601095_report.md`. Phần B (có API key): `cd src; python main.py --part 1`.
+
 Làm sao để ứng dụng agent an toàn hơn?
 
 **Hình thức:** bài tập **cá nhân** (1 người / 1 MSSV).

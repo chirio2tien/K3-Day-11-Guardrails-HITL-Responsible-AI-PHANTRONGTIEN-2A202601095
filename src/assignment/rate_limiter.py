@@ -32,18 +32,26 @@ class RateLimitPlugin(base_plugin.BasePlugin):
 
     async def on_user_message_callback(self, *, invocation_context, user_message):
         """Return Content to block, or None to allow."""
+        # Defends against: RESOURCE EXHAUSTION / cost-amplification / flooding
+        # (a "cascade"/DoS style abuse) that no content guardrail addresses.
+        # Sliding window is per-user so one abuser cannot degrade others.
         self.total_count += 1
         user_id = getattr(invocation_context, "user_id", None) or "anonymous"
         now = time.time()
         window = self.user_windows[user_id]
 
-        # TODO: Implement sliding window:
-        # 1. Pop timestamps older than (now - window_seconds) from the left
-        # 2. If len(window) >= max_requests:
-        #       wait = window_seconds - (now - window[0])
-        #       self.blocked_count += 1
-        #       return self._block_response(
-        #           f"Rate limit exceeded. Try again in {wait:.0f}s."
-        #       )
-        # 3. Else: append now, return None
-        raise NotImplementedError("Implement RateLimitPlugin.on_user_message_callback")
+        # 1. Drop timestamps that fell outside the window.
+        while window and now - window[0] > self.window_seconds:
+            window.popleft()
+
+        # 2. Over the limit → block and tell the caller when to retry.
+        if len(window) >= self.max_requests:
+            wait = self.window_seconds - (now - window[0])
+            self.blocked_count += 1
+            return self._block_response(
+                f"Rate limit exceeded. Try again in {wait:.0f}s."
+            )
+
+        # 3. Within budget → record this request and allow it through.
+        window.append(now)
+        return None

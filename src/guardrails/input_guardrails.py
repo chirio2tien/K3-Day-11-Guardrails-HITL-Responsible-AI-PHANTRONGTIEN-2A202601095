@@ -11,46 +11,79 @@ from google.adk.plugins import base_plugin
 from google.adk.agents.invocation_context import InvocationContext
 
 from core.config import ALLOWED_TOPICS, BLOCKED_TOPICS
+# Zero-trust: reuse the same canonicalization the reference security boundary
+# uses, so an attacker cannot bypass detection with Unicode look-alikes or
+# invisible separators (prompt-injection / prompt-hardening best practice).
+from agents.security_boundary import (
+    normalize_for_security,
+    contains_instruction_override,
+)
 
 
 # ============================================================
-# TODO 1: Implement detect_injection()
+# TODO 1: detect_injection()
 #
-# Canonicalize Unicode/invisible spacing, then detect prompt injection.
-# The function takes user_input (str) and returns True if injection is detected.
+# Defends against: PROMPT INJECTION (direct + indirect via email/RAG).
+# Best-practice applied: PROMPT VALIDATION + PROMPT HARDENING.
 #
-# Required cases:
-# - "ignore (all )?(previous|above) instructions"
-# - "you are now"
-# - "system prompt"
-# - "reveal your (instructions|prompt)"
-# - "pretend you are"
-# - "act as (a |an )?unrestricted"
-# Also handle an instruction embedded in an untrusted email/RAG document, e.g.
-# ``Ignore\u200b all previous instructions``. Do not block a benign request to
-# summarize an external bank-transfer email just because it is external data.
-# Regex is one signal, not the whole security boundary.
+# Design:
+#   1. Canonicalize first (NFKC + strip zero-width) so "Ignore\u200b all …"
+#      and full-width/homoglyph tricks collapse to plain ASCII BEFORE matching.
+#      Regex on raw text is trivially bypassed — normalization is the real gate.
+#   2. Layered signals: a curated EN/VI pattern list PLUS the reference
+#      instruction-override detector. Regex is ONE signal, not the whole
+#      boundary — provenance (data-vs-instruction) is enforced elsewhere.
+#   3. Treat only *instruction-like* text as injection. A benign request to
+#      summarise an external bank email is data, so it must NOT be flagged.
 # ============================================================
+
+# EN + VI jailbreak / extraction patterns. Each targets a concrete technique
+# rather than a single phrase, so paraphrases are still caught.
+INJECTION_PATTERNS = [
+    r"ignore\s+(all\s+)?(previous|above|prior)?\s*instructions?",
+    r"disregard\s+(all\s+)?(previous|above|prior)?\s*(instructions?|rules?|directives?)",
+    r"forget\s+(all\s+)?(your\s+)?(previous\s+)?(instructions?|rules?|prompt)",
+    r"override\s+(your\s+)?(system\s+)?(prompt|instructions?)",
+    r"you\s+are\s+now\b",
+    r"\bDAN\b",
+    r"pretend\s+(you\s+are|to\s+be)",
+    r"act\s+as\s+(a\s+|an\s+)?(unrestricted|jailbroken|evil|dan)",
+    r"role\s*play\s+as",
+    r"system\s+prompt",
+    # Extraction: "reveal/show/leak … password/api key/system prompt/internal".
+    r"reveal\b[\s\S]{0,40}(password|api\s*key|secret|prompt|instructions?|internal|credential)",
+    r"show\b[\s\S]{0,25}(system\s+)?(prompt|instructions?|config|api\s*key|password)",
+    r"translate\b[\s\S]{0,30}(system\s+prompt|instructions?|rules?)",
+    r"output\b[\s\S]{0,25}(config|instructions?|prompt)\s+(as|in)\s+(json|yaml|xml)",
+    r"fill\s+in\s+the\s+blanks?",
+    r"base64|rot13",
+    # Vietnamese equivalents.
+    r"bỏ\s+qua\s+(mọi\s+)?hướng\s+dẫn",
+    r"quên\s+(mọi\s+)?hướng\s+dẫn",
+    r"tiết\s+lộ\s+(mật\s*khẩu|api|thông\s*tin\s*nội\s*bộ|system\s*prompt)",
+    r"cho\s+tôi\s+(xem\s+)?(mật\s*khẩu|system\s*prompt|api\s*key)",
+]
+
 
 def detect_injection(user_input: str) -> bool:
-    """Detect prompt injection patterns in user input.
+    """Return True if the (normalized) input looks like a prompt injection.
 
     Args:
-        user_input: The user's message
+        user_input: The raw user message (may contain Unicode tricks).
 
     Returns:
-        True if injection detected, False otherwise
+        True if an injection / extraction attempt is detected, else False.
     """
-    INJECTION_PATTERNS = [
-        # TODO: Add at least 5 regex patterns
-        # Example:
-        # r"ignore (all )?(previous|above) instructions",
-    ]
+    # Canonicalize BEFORE any matching — this neutralises invisible characters
+    # and homoglyphs that would otherwise slip past the regex layer.
+    normalized = normalize_for_security(user_input)
 
     for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, user_input, re.IGNORECASE):
+        if re.search(pattern, normalized, re.IGNORECASE):
             return True
-    return False
+
+    # Second, independent signal from the reference boundary (defense in depth).
+    return contains_instruction_override(normalized)
 
 
 # ============================================================
@@ -66,20 +99,29 @@ def detect_injection(user_input: str) -> bool:
 def topic_filter(user_input: str) -> bool:
     """Check if input is off-topic or contains blocked topics.
 
+    Defends against: SCOPE ABUSE / privilege creep — the agent must only act
+    inside its banking mandate (LEAST-PRIVILEGE + MICRO-SEGMENTATION of what
+    the assistant is even allowed to discuss).
+
     Args:
         user_input: The user's message
 
     Returns:
         True if input should be BLOCKED (off-topic or blocked topic)
     """
-    input_lower = user_input.lower()
+    input_lower = normalize_for_security(user_input).lower()
 
-    # TODO: Implement logic:
-    # 1. If input contains any blocked topic -> return True
-    # 2. If input doesn't contain any allowed topic -> return True
-    # 3. Otherwise -> return False (allow)
+    # 1. Hard-blocked topics (weapons, hacking, drugs…) → always reject.
+    if any(bad in input_lower for bad in BLOCKED_TOPICS):
+        return True
 
-    pass  # Replace with your implementation
+    # 2. Must contain at least one allowed banking signal, otherwise it is
+    #    outside the assistant's mandate → reject (deny-by-default).
+    if not any(topic in input_lower for topic in ALLOWED_TOPICS):
+        return True
+
+    # 3. On-topic banking question → allow.
+    return False
 
 
 # ============================================================
@@ -132,14 +174,24 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # TODO: Implement logic:
-        # 1. Call detect_injection(text)
-        #    - If True: increment blocked_count, return self._block_response("...")
-        # 2. Call topic_filter(text)
-        #    - If True: increment blocked_count, return self._block_response("...")
-        # 3. If both are False: return None (let message through)
+        # Layer 1 — injection/extraction attempt: fail closed, never reaches LLM.
+        if detect_injection(text):
+            self.blocked_count += 1
+            return self._block_response(
+                "I cannot process that request. I only help with VinBank "
+                "banking questions."
+            )
 
-        pass  # Replace with your implementation
+        # Layer 2 — off-topic / blocked topic: keep the agent in its lane.
+        if topic_filter(text):
+            self.blocked_count += 1
+            return self._block_response(
+                "I'm a VinBank assistant and can only help with "
+                "banking-related questions."
+            )
+
+        # Clean input → let it continue down the pipeline.
+        return None
 
 
 # ============================================================
