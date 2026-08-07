@@ -68,6 +68,12 @@ INJECTION_PATTERNS = [
     r"quên\s+(mọi\s+)?hướng\s+dẫn",
     r"tiết\s+lộ\s+(mật\s*khẩu|api|thông\s*tin\s*nội\s*bộ|system\s*prompt)",
     r"cho\s+tôi\s+(xem\s+)?(mật\s*khẩu|system\s*prompt|api\s*key)",
+    # Multi-step / gradual credential extraction
+    r"config\s+values?",
+    r"print\s+those\s+config",
+    r"db\s*host",
+    r"step\s*\d+\s*:.{0,80}(password|api\s*key|secret|config)",
+    r"(password|api\s*key).{0,40}(db\s*host|database)",
 ]
 
 
