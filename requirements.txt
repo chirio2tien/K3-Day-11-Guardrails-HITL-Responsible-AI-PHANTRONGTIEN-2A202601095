@@ -1,3 +1,5 @@
+# LLM03 Supply Chain — keep this allowlist small; check_supply_chain()
+# in src/guardrails/owasp_llm_controls.py rejects unknown top-level packages.
 google-genai>=1.0.0
 google-adk>=0.3.0
 nemoguardrails>=0.10.0

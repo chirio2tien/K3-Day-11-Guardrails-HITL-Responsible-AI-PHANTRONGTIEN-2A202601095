@@ -18,6 +18,12 @@ from agents.security_boundary import (
     normalize_for_security,
     contains_instruction_override,
 )
+from guardrails.owasp_llm_controls import (
+    decode_obfuscated_payloads,
+    exceeds_input_budget,
+    extract_embedded_documents,
+    validate_untrusted_document,
+)
 
 
 # ============================================================
@@ -76,14 +82,17 @@ def detect_injection(user_input: str) -> bool:
     """
     # Canonicalize BEFORE any matching — this neutralises invisible characters
     # and homoglyphs that would otherwise slip past the regex layer.
+    # Also expand base64/hex so obfuscated injections cannot hide (OWASP LLM01).
     normalized = normalize_for_security(user_input)
+    expanded = normalize_for_security(decode_obfuscated_payloads(normalized))
 
-    for pattern in INJECTION_PATTERNS:
-        if re.search(pattern, normalized, re.IGNORECASE):
+    for candidate in (normalized, expanded):
+        for pattern in INJECTION_PATTERNS:
+            if re.search(pattern, candidate, re.IGNORECASE):
+                return True
+        if contains_instruction_override(candidate):
             return True
-
-    # Second, independent signal from the reference boundary (defense in depth).
-    return contains_instruction_override(normalized)
+    return False
 
 
 # ============================================================
@@ -174,7 +183,25 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
         self.total_count += 1
         text = self._extract_text(user_message)
 
-        # Layer 1 — injection/extraction attempt: fail closed, never reaches LLM.
+        # LLM10 — reject oversized prompts before any model spend.
+        if exceeds_input_budget(text):
+            self.blocked_count += 1
+            return self._block_response(
+                "Your message is too long. Please shorten it and try again."
+            )
+
+        # LLM04 / LLM08 — email/RAG blocks inside the user message are data,
+        # never new instructions. Fail closed on instruction overrides.
+        for source, doc in extract_embedded_documents(text):
+            verdict = validate_untrusted_document(source, doc, trusted=False)
+            if not verdict["allowed"]:
+                self.blocked_count += 1
+                return self._block_response(
+                    "I cannot follow instructions found in external email or "
+                    "documents. Please rephrase your banking question."
+                )
+
+        # LLM01 — injection/extraction attempt: fail closed.
         if detect_injection(text):
             self.blocked_count += 1
             return self._block_response(
@@ -182,7 +209,7 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
                 "banking questions."
             )
 
-        # Layer 2 — off-topic / blocked topic: keep the agent in its lane.
+        # Scope gate — off-topic / blocked topic.
         if topic_filter(text):
             self.blocked_count += 1
             return self._block_response(
@@ -190,7 +217,6 @@ class InputGuardrailPlugin(base_plugin.BasePlugin):
                 "banking-related questions."
             )
 
-        # Clean input → let it continue down the pipeline.
         return None
 
 

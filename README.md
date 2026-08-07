@@ -13,6 +13,8 @@
 > cd src; python main.py --part 5
 > ```
 > Báo cáo: `report/2A202601095_report.md`. Phần B (có API key): `cd src; python main.py --part 1`.
+>
+> Phòng thủ map đủ **OWASP Top 10 for LLM Apps 2025** → `src/guardrails/owasp_llm_controls.py`.
 
 Làm sao để ứng dụng agent an toàn hơn?
 

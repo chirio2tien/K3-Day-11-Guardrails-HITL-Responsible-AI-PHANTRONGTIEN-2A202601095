@@ -88,10 +88,15 @@ async def part2_guardrails():
     _init_judge()  # Initialize LLM judge if TODO 5 is done
     test_content_filter()
 
-    # Part 2C: NeMo Guardrails
+    # Part 2C: NeMo Guardrails (optional TODO 7)
     print("\n--- Part 2C: NeMo Guardrails ---")
     try:
-        from guardrails.nemo_guardrails import init_nemo, test_nemo_guardrails
+        from guardrails.nemo_guardrails import (
+            init_nemo,
+            test_nemo_guardrails,
+            self_check_nemo_config,
+        )
+        self_check_nemo_config()
         init_nemo()
         await test_nemo_guardrails()
     except ImportError:

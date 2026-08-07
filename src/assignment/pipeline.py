@@ -26,6 +26,14 @@ from assignment.monitoring import MonitoringAlert
 # Reuse the reference, deterministic secret detector so the egress policy and
 # the guardrails agree on what "a secret" is (single source of truth).
 from agents.security_boundary import contains_secret, normalize_for_security
+from guardrails.owasp_llm_controls import (
+    check_supply_chain,
+    exceeds_input_budget,
+    extract_embedded_documents,
+    harden_output,
+    owasp_control_matrix,
+    validate_untrusted_document,
+)
 
 
 # Only these exact hosts may ever receive agent data (least-privilege sink).
@@ -128,6 +136,17 @@ def _input_decision(text: str):
     """Run the deterministic input gates; return (blocked, layer, message)."""
     from guardrails.input_guardrails import detect_injection, topic_filter
 
+    # LLM10
+    if exceeds_input_budget(text):
+        return True, "rate_limiter", "Blocked: input exceeds size budget (LLM10)."
+
+    # LLM04 / LLM08 — untrusted email/RAG embedded in the user turn
+    for source, doc in extract_embedded_documents(text):
+        verdict = validate_untrusted_document(source, doc, trusted=False)
+        if not verdict["allowed"]:
+            return True, "input_guardrail", f"Blocked: {verdict['reason']}"
+
+    # LLM01
     if detect_injection(text):
         return True, "input_guardrail", "Blocked: prompt-injection pattern detected."
     if topic_filter(text):
@@ -167,11 +186,17 @@ async def _process_query(text, *, audit, monitor, action_type="general"):
         response = message
     else:
         response = await _maybe_live_response(text)
-        # Output-side redaction (fail-closed) even if input let it through.
+        # LLM02 — secret/PII redaction
         filtered = content_filter(response)
         if not filtered["safe"]:
             blocked, layer = True, "output_guardrail"
             response = filtered["redacted"]
+        else:
+            # LLM05 / LLM07 / LLM09
+            hardened = harden_output(response)
+            if not hardened["safe"]:
+                blocked, layer = True, "output_guardrail"
+                response = hardened["redacted"]
 
     monitor.total_requests += 1
     if blocked:
@@ -261,6 +286,9 @@ async def run_assignment_suite(pipeline, student_id: str) -> dict:
             "verdict": "PASS" if safe else "BLOCK",
         })
 
+    # LLM03 — supply-chain allowlist (deterministic, no network)
+    supply = check_supply_chain()
+
     results = {
         "student_id": student_id,
         "framework": "google-adk",
@@ -269,6 +297,10 @@ async def run_assignment_suite(pipeline, student_id: str) -> dict:
         "rate_limit": rate_limit,
         "edge_cases": edge_cases,
         "judge_sample": judge_sample,
+        "owasp_llm_2025": {
+            "controls": owasp_control_matrix(),
+            "supply_chain": supply,
+        },
     }
 
     _OUTPUTS.mkdir(parents=True, exist_ok=True)

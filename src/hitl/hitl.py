@@ -5,6 +5,8 @@ Lab 11 — Part 4: Human-in-the-Loop Design
 """
 from dataclasses import dataclass
 
+from guardrails.owasp_llm_controls import agency_requires_hitl
+
 
 # ============================================================
 # TODO 11: Implement ConfidenceRouter
@@ -65,11 +67,9 @@ class ConfidenceRouter:
         Returns:
             RoutingDecision with routing action and metadata
         """
-        # LEAST-PRIVILEGE + fail-closed: a high-risk side effect ALWAYS needs a
-        # human, no matter how confident the model claims to be. The model's
-        # self-reported confidence must never be able to authorise money
-        # movement (defence against privilege compromise / over-trust).
-        if action_type in HIGH_RISK_ACTIONS:
+        # LLM06 Excessive Agency + least-privilege: a high-risk side effect
+        # ALWAYS needs a human, no matter how confident the model claims to be.
+        if agency_requires_hitl(action_type, HIGH_RISK_ACTIONS) or action_type in HIGH_RISK_ACTIONS:
             return RoutingDecision(
                 action="escalate",
                 confidence=confidence,

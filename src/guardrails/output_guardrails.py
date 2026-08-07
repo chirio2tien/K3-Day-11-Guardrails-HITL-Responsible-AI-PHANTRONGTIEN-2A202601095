@@ -13,6 +13,10 @@ from google.adk import runners
 from google.adk.plugins import base_plugin
 
 from core.utils import chat_with_agent
+from guardrails.owasp_llm_controls import (
+    decode_obfuscated_payloads,
+    harden_output,
+)
 
 
 # ============================================================
@@ -28,7 +32,10 @@ from core.utils import chat_with_agent
 # ============================================================
 
 def content_filter(response: str) -> dict:
-    """Filter response for PII, secrets, and harmful content.
+    """Filter response for PII, secrets, and harmful content (OWASP LLM02).
+
+    Also scans base64/hex-decoded variants so encoded exfiltration cannot
+    bypass the regex layer.
 
     Args:
         response: The LLM's response text
@@ -37,14 +44,11 @@ def content_filter(response: str) -> dict:
         dict with 'safe', 'issues', and 'redacted' keys
     """
     issues = []
-    redacted = response
+    redacted = response or ""
 
     # Defends against: DATA EXFILTRATION / privilege compromise on the OUTPUT
     # side. Even if an upstream layer is bypassed, no secret or customer PII
     # may leave the boundary un-redacted (data protection + fail-closed egress).
-    #
-    # Order matters: match the most specific credential patterns first so a
-    # leaked secret is never mistaken for ordinary text.
     PII_PATTERNS = {
         # --- Injected lab secrets (highest priority) ---
         "admin_password": r"\badmin123\b",
@@ -57,11 +61,19 @@ def content_filter(response: str) -> dict:
         "national_id": r"\b\d{12}\b|\b\d{9}\b",
     }
 
+    # Scan both the raw reply and any decoded obfuscation payload (LLM02).
+    scan_text = decode_obfuscated_payloads(redacted)
     for name, pattern in PII_PATTERNS.items():
-        matches = re.findall(pattern, redacted, re.IGNORECASE)
+        matches = re.findall(pattern, scan_text, re.IGNORECASE)
         if matches:
             issues.append(f"{name}: {len(matches)} found")
             redacted = re.sub(pattern, "[REDACTED]", redacted, flags=re.IGNORECASE)
+            # If the secret only lived inside an encoded blob, fail closed.
+            if not re.search(pattern, response or "", re.IGNORECASE):
+                redacted = (
+                    "I cannot share internal system details. How else can I help "
+                    "with your VinBank account or banking needs?"
+                )
 
     return {
         "safe": len(issues) == 0,
@@ -184,9 +196,7 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         if not response_text:
             return llm_response
 
-        # Layer 1 — deterministic redaction (fail-closed). If a secret slipped
-        # through, replace the WHOLE reply rather than emit a partly-redacted
-        # message that might still leak structure.
+        # Layer 1 — LLM02 deterministic redaction (fail-closed on secrets/PII).
         filtered = content_filter(response_text)
         if not filtered["safe"]:
             self.redacted_count += 1
@@ -200,8 +210,17 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
             )
             return llm_response
 
-        # Layer 2 — semantic review by the independent judge (catches unsafe
-        # content that regex cannot, e.g. subtle policy violations).
+        # Layer 2 — LLM05 / LLM07 / LLM09 hardening (markup, prompt leak, misinfo).
+        hardened = harden_output(response_text)
+        if not hardened["safe"]:
+            self.blocked_count += 1
+            llm_response.content = types.Content(
+                role="model",
+                parts=[types.Part.from_text(text=hardened["redacted"])],
+            )
+            return llm_response
+
+        # Layer 3 — LLM09 semantic judge (independent second opinion).
         if self.use_llm_judge:
             verdict = await llm_safety_check(response_text)
             if not verdict["safe"]:
