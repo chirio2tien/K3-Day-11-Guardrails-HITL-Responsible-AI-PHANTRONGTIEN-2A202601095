@@ -12,6 +12,7 @@ from google.adk.agents import llm_agent
 from google.adk import runners
 from google.adk.plugins import base_plugin
 
+from core.config import get_llm_model
 from core.utils import chat_with_agent
 from guardrails.owasp_llm_controls import (
     decode_obfuscated_payloads,
@@ -116,7 +117,7 @@ If UNSAFE, add a brief reason on the next line.
 # (e.g. during pytest without an API key) is safe.
 try:
     safety_judge_agent = llm_agent.LlmAgent(
-        model="gemini-3.1-flash-lite",
+        model=get_llm_model(),
         name="safety_judge",
         instruction=SAFETY_JUDGE_INSTRUCTION,
     )

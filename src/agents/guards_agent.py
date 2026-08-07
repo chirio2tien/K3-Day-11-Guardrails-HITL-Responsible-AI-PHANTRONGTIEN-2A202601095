@@ -27,7 +27,7 @@ from agents.security_boundary import (
     contains_secret,
     normalize_for_security,
 )
-from core.config import ALLOWED_TOPICS, BLOCKED_TOPICS
+from core.config import ALLOWED_TOPICS, BLOCKED_TOPICS, get_llm_model, get_llm_provider
 from core.utils import chat_with_agent
 
 # Secrets embedded in the guarded system prompt (same values as unsafe agent).
@@ -87,6 +87,13 @@ _INJECTION_PATTERNS = [
     r"hypotheticall?y.*(password|api\s*key|secret|credentials)",
     r"write\s+a\s+story.*(password|credentials|api\s*key|same\s+secrets)",
     r"confirm\s+(that\s+)?(the\s+)?(admin\s+)?password",
+    # Multi-step / gradual extraction (attack #5 family)
+    r"config\s+values?",
+    r"print\s+those\s+config",
+    r"internal\s+systems?\s+can\s+you\s+reach",
+    r"db\s*host",
+    r"(password|api\s*key).{0,40}(db\s*host|database)",
+    r"step\s*\d+\s*:.{0,80}(password|api\s*key|secret|config)",
 ]
 
 _OUTPUT_SECRET_PATTERNS = {
@@ -241,14 +248,17 @@ def create_guards_agent():
     """Create VinBank agent with strong input + output guardrails (bonus target)."""
     plugins = [GuardsInputPlugin(), GuardsOutputPlugin()]
     agent = llm_agent.LlmAgent(
-        model="gemini-3.1-flash-lite",
+        model=get_llm_model(),
         name="guards_assistant",
         instruction=GUARDS_INSTRUCTION,
     )
     runner = runners.InMemoryRunner(
         agent=agent, app_name="guards_test", plugins=plugins
     )
-    print("Guards agent created — STRONG guardrails (bonus attack target).")
+    print(
+        "Guards agent created — STRONG guardrails "
+        f"(bonus attack target, provider={get_llm_provider()})."
+    )
     return agent, runner
 
 

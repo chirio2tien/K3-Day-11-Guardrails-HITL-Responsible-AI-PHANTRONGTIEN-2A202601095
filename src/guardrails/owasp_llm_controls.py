@@ -33,6 +33,7 @@ ALLOWED_REQUIREMENT_PACKAGES = frozenset({
     "google-adk",
     "nemoguardrails",
     "langchain-google-genai",
+    "litellm",
     "pytest",
     "jsonschema",
     "python-dotenv",

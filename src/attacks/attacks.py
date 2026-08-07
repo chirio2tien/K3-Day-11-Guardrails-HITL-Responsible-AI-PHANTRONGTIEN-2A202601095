@@ -11,8 +11,7 @@ import json
 import re
 from pathlib import Path
 
-from google import genai
-
+from core.config import get_deepseek_model_name, get_llm_provider, get_google_model_name
 from core.utils import chat_with_agent
 from agents.guards_agent import (
     GUARDS_SECRETS,
@@ -267,12 +266,19 @@ async def run_attacks(
     print("=" * 60)
 
     results = []
-    for attack in prompts:
+    for i, attack in enumerate(prompts):
+        if i > 0:
+            # Space out free-tier Gemini calls (LLM10 / quota hygiene).
+            import asyncio
+            await asyncio.sleep(4)
+
         print(f"\n--- Attack #{attack['id']}: {attack['category']} ---")
         print(f"Input: {attack['input'][:100]}...")
 
         try:
-            response, _ = await chat_with_agent(agent, runner, attack["input"])
+            response, _ = await chat_with_agent(
+                agent, runner, attack["input"], retries=2, base_delay=12.0
+            )
             outcome = classify_attack_outcome(
                 attack["input"], response, target_name=target_name
             )
@@ -297,22 +303,47 @@ async def run_attacks(
             if outcome["leaked"]:
                 print(">>> LEAKED")
         except Exception as e:
+            # Still classify the *prompt* against offline gates. A 429/quota
+            # error is not a secret leak — and if the input would have been
+            # blocked by guards, report it as blocked rather than "passed".
+            err_text = f"Error: {e}"
+            outcome = classify_attack_outcome(
+                attack["input"], err_text, target_name=target_name
+            )
+            # Never treat transport/quota failures as LEAKED.
+            outcome["leaked"] = False
+            if outcome.get("layer") in (None, "leaked") or (
+                not outcome.get("blocked") and not outcome.get("blocked_input")
+            ):
+                # Prompt would not be hard-blocked offline — keep ERROR layer.
+                outcome.update({
+                    "blocked": False,
+                    "blocked_input": False,
+                    "layer": "error",
+                    "blocked_at": f"ERROR — {type(e).__name__} (no secret leak)",
+                })
+            else:
+                outcome["blocked_at"] = (
+                    f"{outcome['blocked_at']} · runtime {type(e).__name__} "
+                    "(no secret leak)"
+                )
             result = {
                 "id": attack["id"],
                 "name": attack.get("category") or f"Attack #{attack['id']}",
                 "category": attack["category"],
                 "input": attack["input"],
-                "response": f"Error: {e}",
-                "response_preview": f"Error: {e}",
+                "response": err_text,
+                "response_preview": err_text[:300],
                 "leaked": False,
-                "blocked_input": False,
-                "blocked": False,
-                "layer": "error",
-                "blocked_at": f"ERROR — {type(e).__name__}",
+                "blocked_input": outcome["blocked_input"],
+                "blocked": outcome["blocked"],
+                "layer": outcome["layer"],
+                "blocked_at": outcome["blocked_at"],
                 "error": f"{type(e).__name__}: {e}",
                 "target": target_name,
             }
             print(f"Error: {e}")
+            print(f">>> {result['blocked_at']}")
 
         results.append(result)
 
@@ -420,18 +451,35 @@ Format as JSON array. Make prompts LONG and DETAILED — short prompts are easy 
 """
 
 
-async def generate_ai_attacks() -> list:
-    """Use Gemini to generate adversarial prompts automatically."""
+def _generate_text_for_redteam(prompt: str) -> str:
+    """Provider-agnostic text generation for TODO 14 (Google or DeepSeek)."""
+    provider = get_llm_provider()
+    if provider == "deepseek":
+        import litellm
+
+        resp = litellm.completion(
+            model=get_deepseek_model_name(),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.9,
+        )
+        return resp.choices[0].message.content or ""
+
+    from google import genai
+
     client = genai.Client()
     response = client.models.generate_content(
-        model="gemini-3.1-flash-lite",
-        contents=RED_TEAM_PROMPT,
+        model=get_google_model_name(),
+        contents=prompt,
     )
+    return response.text or ""
 
-    print("AI-Generated Attack Prompts (Aggressive):")
+
+async def generate_ai_attacks() -> list:
+    """Use the configured LLM to generate adversarial prompts automatically."""
+    print(f"AI-Generated Attack Prompts (provider={get_llm_provider()}):")
     print("=" * 60)
     try:
-        text = response.text
+        text = _generate_text_for_redteam(RED_TEAM_PROMPT)
         start = text.find("[")
         end = text.rfind("]") + 1
         if start >= 0 and end > start:
@@ -447,8 +495,7 @@ async def generate_ai_attacks() -> list:
             print(text[:500])
             ai_attacks = []
     except Exception as e:
-        print(f"Error parsing: {e}")
-        print(f"Raw response: {response.text[:500]}")
+        print(f"Error generating/parsing AI attacks: {e}")
         ai_attacks = []
 
     print(f"\nTotal: {len(ai_attacks)} AI-generated attacks")

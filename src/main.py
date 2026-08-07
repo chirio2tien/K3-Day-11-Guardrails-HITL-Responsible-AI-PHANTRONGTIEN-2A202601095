@@ -31,25 +31,48 @@ async def part1_attacks():
     await test_agent(unsafe_agent, unsafe_runner)
 
     print("\n--- Attacks on UNSAFE agent (hạng mục B) ---")
+    print("(delay between prompts to reduce Gemini 429 quota errors)")
     unsafe_results = await run_attacks(
         unsafe_agent, unsafe_runner, target_name="unsafe"
     )
 
     # --- Guards (điểm cộng only if leaked=true here) ---
     print("\n--- Attacks on GUARDS agent (điểm cộng nếu LEAKED) ---")
+    print("Waiting 15s before guards run to ease free-tier rate limits…")
+    import asyncio as _asyncio
+    await _asyncio.sleep(15)
     guards_agent, guards_runner = create_guards_agent()
     guards_results = await run_attacks(
         guards_agent, guards_runner, target_name="guards"
     )
 
     print("\n--- Generating AI attacks (TODO 14) ---")
-    ai_attacks = await generate_ai_attacks()
+    try:
+        ai_attacks = await generate_ai_attacks()
+    except Exception as e:
+        print(f"[skip TODO 14] AI attack generation failed: {type(e).__name__}: {e}")
+        ai_attacks = []
 
     save_attack_results(
         unsafe_results=unsafe_results,
         guards_results=guards_results,
         ai_attacks=ai_attacks,
     )
+
+    quota_hits = sum(
+        1
+        for r in (unsafe_results + guards_results)
+        if "429" in (r.get("error") or "")
+        or "RESOURCE_EXHAUSTED" in (r.get("response") or "")
+        or "ResourceExhausted" in (r.get("error") or "")
+    )
+    if quota_hits:
+        print(
+            f"\n[!] {quota_hits} call(s) hit Gemini 429 quota. "
+            "Evidence still saved (leaked=false on errors). "
+            "Re-run later for live replies:\n"
+            "    python main.py --part 1"
+        )
 
     bonus_leaks = sum(1 for r in guards_results if r.get("leaked"))
     print("\n" + "=" * 60)
