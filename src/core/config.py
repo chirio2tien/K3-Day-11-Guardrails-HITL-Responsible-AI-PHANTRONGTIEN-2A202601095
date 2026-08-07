@@ -117,13 +117,17 @@ ALLOWED_TOPICS = [
     "banking", "account", "transaction", "transfer",
     "loan", "interest", "savings", "credit",
     "deposit", "withdrawal", "balance", "payment",
-    "tai khoan", "giao dich", "tiet kiem", "lai suat",
-    "chuyen tien", "the tin dung", "so du", "vay",
-    "ngan hang", "atm",
+    # Vietnamese (có dấu + không dấu) — demo Part 5 / UI
+    "tai khoan", "tài khoản", "giao dich", "giao dịch",
+    "tiet kiem", "tiết kiệm", "lai suat", "lãi suất",
+    "chuyen tien", "chuyển tiền", "the tin dung", "thẻ tín dụng",
+    "so du", "số dư", "vay", "ngan hang", "ngân hàng",
+    "atm", "rút tiền", "gửi tiết kiệm", "hạn mức",
 ]
 
 # Blocked topics (immediate reject)
 BLOCKED_TOPICS = [
     "hack", "exploit", "weapon", "drug", "illegal",
     "violence", "gambling", "bomb", "kill", "steal",
+    "bom", "ma túy", "vũ khí",
 ]
